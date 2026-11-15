@@ -6,6 +6,6 @@
   "disclaimer": "Bağımsız hayran sayfasıdır. Rockstar Games ve Take-Two ile bağlantılı değildir.",
   "colors": { "bg": "#0B0B14", "main": "#FF2E93", "accent": "#00E5D4", "text": "#FFFFFF", "muted": "#9AA0B5" },
   "fonts": { "bold": "fonts/Inter-ExtraBold.otf", "regular": "fonts/Inter-Regular.otf" },
-  "fixed_tags": ["#leonidaradar", "#gta6", "#gtavi"],
+  "fixed_tags": ["#leonidaradar.tr", "#gta6", "#gtavi"],
   "campaign_tag": ""
 }
