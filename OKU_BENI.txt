@@ -1,0 +1,11 @@
+LEONIDA RADAR - Shorts Factory + Autopilot
+
+YEREL KULLANIM: 1) Python 3.11+ ve ffmpeg kur, pip install pillow  2) content.csv doldur (source ZORUNLU)
+3) python factory.py  4) python check.py ("BASARILI" yazmali)
+
+OTOMATIK YAYIN (her gun kendi calisir): PDF "Otomasyon Kurulum Rehberi" adimlarini izle:
+Buffer hesabi + API anahtari -> GitHub public repo -> BUFFER_API_KEY secret -> Pages kaynagi: GitHub Actions
+-> Actions > autopilot > Run workflow. Ilk gun autopilot_config.json icinde max_per_run = 1 yap.
+
+TEST: python tests/run_tests.py (sahte Buffer sunucusuna karsi 24 kontrol)
+GELIR HESABI: python revenue_calc.py GUNLUK_IZLENME  /  python model_90gun.py

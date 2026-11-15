@@ -1,0 +1,8 @@
+{
+  "max_per_run": 2,
+  "queue_limit": 10,
+  "youtube_category_id": "20",
+  "ai_generated": false,
+  "media_wait_seconds": 600,
+  "mode": "addToQueue"
+}
