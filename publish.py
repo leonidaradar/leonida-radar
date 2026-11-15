@@ -19,7 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 API = os.environ.get("BUFFER_API_URL", "https://api.buffer.com")
-KEY = os.environ.get("BUFFER_API_KEY", "")
+KEY = "".join(os.environ.get("BUFFER_API_KEY", "").split())
 BASE = os.environ.get("MEDIA_BASE_URL", "").rstrip("/") + "/"
 STATE_FILE = Path(os.environ.get("STATE_FILE", str(ROOT / "published.json")))
 OUT = Path(os.environ.get("OUT_DIR", str(ROOT / "out")))
