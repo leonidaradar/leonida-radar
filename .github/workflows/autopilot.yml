@@ -1,1 +1,32 @@
 
+name: Autopilot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  autopilot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repoyu indir
+        uses: actions/checkout@v4
+
+      - name: Python kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Dosyalari kontrol et
+        run: |
+          ls -la
+          find . -maxdepth 3 -type f
+
+      - name: Check calistir
+        run: python check.py
+
+      - name: Factory calistir
+        run: python factory.py
+
+      - name: Publish calistir
+        run: python publish.py
