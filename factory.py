@@ -14,6 +14,8 @@ W, H, FPS = 1080, 1920, 30
 SAFE_X0, SAFE_X1 = 80, 900          # sağdaki buton şeridi (900-1080) boş kalır
 SAFE_Y0, SAFE_Y1 = 300, 1480        # üst menü ve alt açıklama alanı boş kalır
 MAX_SECONDS = 59
+MUSIC_GAIN = 0.32   # müzik seviyesi (video yaklaşık -16 LUFS civarına oturur)
+PING_GAIN = 0.60    # radar sesi seviyesi
 
 def hex2rgb(h):
     h = h.lstrip("#"); return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
@@ -177,10 +179,29 @@ def build_video(brand, row, out_dir, tmp):
     lst.write_text("".join(f"file '{c.as_posix()}'\n" for c in clips))
     out = out_dir / f"{row['id']}.mp4"
     music = ROOT / "assets" / "music.mp3"
-    audio = ["-stream_loop", "-1", "-i", str(music)] if music.exists() else ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
-    run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), *audio,
-         "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
-         "-r", str(FPS), "-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart", str(out)])
+    ping = ROOT / "assets" / "ping.wav"
+    cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(lst)]
+    if music.exists():
+        # Ses kimliği: kesintisiz müzik + videonun başında ve final sahnesinin başında 'radar' sesi
+        D = total_dur
+        final_start = max(0.0, D - scene_duration("final", "") + 0.05)
+        cmd += ["-stream_loop", "-1", "-i", str(music)]
+        fg = (f"[1:a]atrim=0:{D:.2f},asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.5,"
+              f"afade=t=out:st={max(0.0, D - 1.4):.2f}:d=1.4,volume={MUSIC_GAIN}[m]")
+        if ping.exists():
+            cmd += ["-i", str(ping)]
+            ms = int(final_start * 1000)
+            fg += (f";[2:a]volume={PING_GAIN},asplit=2[p1][p2];[p2]adelay={ms}|{ms}[p2d];"
+                   f"[m][p1][p2d]amix=inputs=3:normalize=0,alimiter=limit=0.89[a]")
+        else:
+            fg += ";[m]alimiter=limit=0.89[a]"
+        cmd += ["-filter_complex", fg, "-map", "0:v", "-map", "[a]"]
+    else:
+        cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-map", "0:v", "-map", "1:a"]
+    cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", "-r", str(FPS),
+            "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2", "-t", f"{total_dur:.2f}",
+            "-movflags", "+faststart", str(out)]
+    run(cmd)
     return total_dur
 
 def uniq(seq):
