@@ -1,32 +1,73 @@
+name: autopilot
 
-name: Autopilot
-
+# Her gün 06:00 UTC (Türkiye saatiyle 09:00) çalışır; elle de başlatılabilir.
 on:
+  schedule:
+    - cron: "0 6 * * *"
   workflow_dispatch:
 
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: autopilot
+  cancel-in-progress: false
+
 jobs:
-  autopilot:
+  build-and-publish:
     runs-on: ubuntu-latest
-
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - name: Repoyu indir
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Python kur
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Dosyalari kontrol et
+      - name: Araçları kur
         run: |
-          ls -la
-          find . -maxdepth 3 -type f
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          pip install pillow
 
-      - name: Check calistir
-        run: python check.py
-
-      - name: Factory calistir
+      - name: Videoları üret
         run: python factory.py
 
-      - name: Publish calistir
+      - name: Yayın öncesi kontrol (başarısızsa yayın yapılmaz)
+        run: python check.py
+
+      - name: Videoları media klasörüne kopyala ve kaydet
+        run: |
+          mkdir -p media
+          cp out/*.mp4 media/
+          git config user.name "autopilot"
+          git config user.email "autopilot@users.noreply.github.com"
+          git add media
+          git diff --cached --quiet || git commit -m "media: videolar güncellendi"
+          git push
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: media
+
+      - name: Videoları herkese açık adrese yayınla (GitHub Pages)
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: Buffer'a gönder
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          MEDIA_BASE_URL: ${{ steps.deploy.outputs.page_url }}
         run: python publish.py
+
+      - name: Yayın durumunu kaydet
+        run: |
+          [ -f published.json ] && git add published.json || true
+          git diff --cached --quiet || git commit -m "durum: yayınlananlar güncellendi"
+          git push
