@@ -1,10 +1,15 @@
 name: autopilot
 
-# Her gün 06:00 UTC (Türkiye saatiyle 09:00) çalışır; elle de başlatılabilir.
+# Her gün 06:00 UTC (Türkiye saatiyle 09:00) çalışır; content.csv değişince hemen çalışır; elle de başlatılabilir.
 on:
   schedule:
     - cron: "0 6 * * *"
   workflow_dispatch:
+  push:
+    paths:
+      - "content.csv"
+      - "brand.json"
+      - "autopilot_config.json"
 
 permissions:
   contents: write
@@ -34,8 +39,23 @@ jobs:
           sudo apt-get install -y ffmpeg
           pip install pillow
 
-      - name: Videoları üret
+      - name: Videoları üret (değişmeyenler önbellekten)
+        env:
+          MEDIA_CACHE_DIR: media
         run: python factory.py
+
+      - name: Atlanan ve uyarılı satırları özete yaz
+        run: |
+          {
+            echo "### Satır kontrolü"
+            if [ -s out/skipped.txt ]; then
+              echo '```'
+              cat out/skipped.txt
+              echo '```'
+            else
+              echo "Tüm satırlar geçerli."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Yayın öncesi kontrol (başarısızsa yayın yapılmaz)
         run: python check.py
@@ -43,7 +63,7 @@ jobs:
       - name: Videoları media klasörüne kopyala ve kaydet
         run: |
           mkdir -p media
-          cp out/*.mp4 media/
+          cp out/*.mp4 out/*.hash media/
           git config user.name "autopilot"
           git config user.email "autopilot@users.noreply.github.com"
           git add media
@@ -64,7 +84,15 @@ jobs:
         env:
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           MEDIA_BASE_URL: ${{ steps.deploy.outputs.page_url }}
-        run: python publish.py
+        run: |
+          set -o pipefail
+          python publish.py | tee publish_log.txt
+          {
+            echo "### Buffer yayın özeti"
+            echo '```'
+            tail -n 25 publish_log.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Yayın durumunu kaydet
         run: |
