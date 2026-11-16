@@ -15,18 +15,21 @@ Kullanım:
   python publish.py --dry-run  # ağ kullanmadan ne göndereceğini yazdır
 """
 import csv, json, os, sys, time, urllib.request, urllib.error
+from datetime import timedelta
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from validate_rows import load_valid, due_at_utc, parse_publish_at, istanbul_now, format_problems
 
 ROOT = Path(__file__).resolve().parent
 API = os.environ.get("BUFFER_API_URL", "https://api.buffer.com")
-KEY = "".join(os.environ.get("BUFFER_API_KEY", "").split())
-BASE = os.environ.get("MEDIA_BASE_URL", "").rstrip("/") + "/"
+KEY = "".join(os.environ.get("BUFFER_API_KEY", "").split())  # kopyalamadan gelen boşluk/satır sonlarını temizler
+BASE = "".join(os.environ.get("MEDIA_BASE_URL", "").split()).rstrip("/") + "/"
 STATE_FILE = Path(os.environ.get("STATE_FILE", str(ROOT / "published.json")))
 OUT = Path(os.environ.get("OUT_DIR", str(ROOT / "out")))
 CONTENT = Path(os.environ.get("CONTENT_FILE", str(ROOT / "content.csv")))
 SERVICES = ["instagram", "tiktok", "youtube"]
 
-DEFAULTS = {"max_per_run": 2, "queue_limit": 10, "youtube_category_id": "20",
+DEFAULTS = {"max_per_run": 10, "queue_limit": 10, "youtube_category_id": "20",
             "ai_generated": False, "media_wait_seconds": 600, "mode": "addToQueue"}
 
 
@@ -138,9 +141,12 @@ CREATE = """mutation CreatePost($input: CreatePostInput!) {
 }"""
 
 
-def build_input(svc, channel_id, text, title, url, cfg):
-    inp = {"text": text, "channelId": channel_id, "schedulingType": "automatic", "mode": cfg["mode"],
+def build_input(svc, channel_id, text, title, url, cfg, due_at=None):
+    mode = "customScheduled" if due_at else cfg["mode"]
+    inp = {"text": text, "channelId": channel_id, "schedulingType": "automatic", "mode": mode,
            "assets": [{"video": {"url": url}}]}
+    if due_at:
+        inp["dueAt"] = due_at
     if svc == "instagram":
         inp["metadata"] = {"instagram": {"type": "reel", "shouldShareToFeed": True, "isAiGenerated": bool(cfg["ai_generated"])}}
     elif svc == "tiktok":
@@ -161,17 +167,29 @@ def save_state(st):
     STATE_FILE.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def is_done(state, rid, channels):
+    st = state.get(rid, {})
+    return "_atlandi" in st or all(s in st for s in channels)
+
+
 def main():
     dry = "--dry-run" in sys.argv
     cfg = load_cfg()
-    rows = list(csv.DictReader(open(CONTENT, encoding="utf-8-sig")))
+    rows, problems = load_valid(CONTENT)
+    if problems:
+        print("Atlanan/uyarılı satırlar:\n" + format_problems(problems) + "\n")
     caps = {}
     for c in csv.DictReader(open(OUT / "captions.csv", encoding="utf-8-sig")):
         caps[(c["id"], c["platform"])] = c
     state = load_state()
+    # sıralama: önce kesin saatli (publish_at) satırlar saat sırasıyla, sonra saatsizler dosya sırasıyla
+    far = parse_publish_at("2999-01-01 00:00")
+    rows = sorted(enumerate(rows), key=lambda x: ((parse_publish_at(x[1].get("publish_at")) or far), x[0]))
+    rows = [r for _, r in rows]
     if dry:
         print("KURU ÇALIŞMA: ağ kullanılmıyor.")
         channels, org = {s: f"<{s}-kanal>" for s in SERVICES}, "<org>"
+        qcount = {s: 0 for s in channels}
     else:
         if not KEY:
             raise Fatal("BUFFER_API_KEY tanımlı değil.")
@@ -179,10 +197,23 @@ def main():
             raise Fatal("MEDIA_BASE_URL tanımlı değil (videoların herkese açık adresi).")
         org = get_org()
         channels = get_channels(org)
+        qcount = {}
+        for svc, ch in channels.items():          # kuyruk dolulukları: kanal başına BİR sorgu (istek tasarrufu)
+            qcount[svc] = queue_count(org, ch)
     full = set()
     done_rows = 0
+    now = istanbul_now()
     for row in rows:
         rid = row["id"]
+        if is_done(state, rid, channels):
+            continue
+        pub = parse_publish_at(row.get("publish_at"))
+        if pub and pub < now + timedelta(minutes=2):
+            print(f"[{rid}] publish_at geçmiş ({row['publish_at']}); eski haber yayınlanmıyor, atlandı.")
+            if not dry:
+                state.setdefault(rid, {})["_atlandi"] = "gecmis zaman"
+                save_state(state)
+            continue
         todo = [s for s in channels if s not in state.get(rid, {}) and s not in full]
         if not todo:
             continue
@@ -191,7 +222,8 @@ def main():
         if not (OUT / f"{rid}.mp4").exists():
             raise Fatal(f"out/{rid}.mp4 yok; önce factory.py çalışmalı.")
         url = f"{BASE}{rid}.mp4"
-        print(f"[{rid}] {row['series']}: {row['headline']}")
+        due = due_at_utc(row)
+        print(f"[{rid}] {row['series']}: {row['headline']}" + (f"  (saat {row['publish_at']})" if due else ""))
         if not dry:
             media_ready(url, cfg["media_wait_seconds"])
         for svc in todo:
@@ -199,20 +231,20 @@ def main():
             if not cap:
                 print(f"  {svc}: açıklama bulunamadı, atlandı")
                 continue
-            if not dry:
-                n = queue_count(org, channels[svc])
-                if n is not None and n >= cfg["queue_limit"]:
-                    print(f"  {svc}: kuyruk dolu ({n}/{cfg['queue_limit']}), atlandı")
-                    full.add(svc)
-                    continue
-            inp = build_input(svc, channels[svc], cap["caption"], cap["title"] or row["headline"], url, cfg)
+            if not dry and qcount.get(svc) is not None and qcount[svc] >= cfg["queue_limit"]:
+                print(f"  {svc}: kuyruk dolu ({qcount[svc]}/{cfg['queue_limit']}), atlandı")
+                full.add(svc)
+                continue
+            inp = build_input(svc, channels[svc], cap["caption"], cap["title"] or row["headline"], url, cfg, due)
             if dry:
-                print(f"  {svc}: gönderilecek -> {json.dumps(inp, ensure_ascii=False)[:160]}...")
+                print(f"  {svc}: gönderilecek -> {json.dumps(inp, ensure_ascii=False)[:170]}...")
                 continue
             res = gql(CREATE, {"input": inp})["createPost"]
             if res.get("post"):
                 state.setdefault(rid, {})[svc] = {"post_id": res["post"]["id"], "due": res["post"].get("dueAt")}
                 save_state(state)
+                if qcount.get(svc) is not None:
+                    qcount[svc] += 1
                 print(f"  {svc}: kuyruğa eklendi ({res['post']['id']}, zaman {res['post'].get('dueAt')})")
             else:
                 msg = str(res.get("message", "bilinmeyen hata"))
@@ -221,10 +253,12 @@ def main():
                     full.add(svc)
         if dry or all(s in state.get(rid, {}) for s in channels):
             done_rows += 1
-    left = [r["id"] for r in rows if any(s not in state.get(r["id"], {}) for s in channels)]
+    left = [r["id"] for r in rows if not is_done(state, r["id"], channels)]
     print(f"\nBu çalışmada tamamlanan video: {done_rows}. Bekleyen: {len(left)}")
     if full:
         print(f"Dolu kuyruklar: {', '.join(sorted(full))}. Buffer'da yer açılınca sonraki çalışma devam eder.")
+    if not dry:
+        print("Kuyruk doluluğu: " + ", ".join(f"{s} {qcount[s]}/{cfg['queue_limit']}" for s in channels if qcount.get(s) is not None))
 
 
 if __name__ == "__main__":

@@ -13,7 +13,10 @@ def probe(p):
 
 def err(msg): errors.append(msg); print("  HATA:", msg)
 
-rows = list(csv.DictReader(open(ROOT / "content.csv", encoding="utf-8-sig")))
+sys.path.insert(0, str(ROOT))
+from validate_rows import load_valid
+rows, _problems = load_valid(ROOT / "content.csv")   # karantinadaki satırlar zaten üretilmedi; denetlenmez
+if not rows: print("Geçerli satır yok."); sys.exit(1)
 caps = list(csv.DictReader(open(OUT / "captions.csv", encoding="utf-8-sig")))
 headlines = [r["headline"].strip().lower() for r in rows]
 if len(set(headlines)) != len(headlines): err("Aynı manşet iki kez var (tekrar içerik).")

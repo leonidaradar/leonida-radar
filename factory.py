@@ -5,15 +5,17 @@ content.csv  ->  1080x1920 mp4 (her satır bir video)  +  captions.csv  +  avata
 Gereken: Python 3.9+, ffmpeg, Pillow  (pip install pillow)
 Kullanım:  python factory.py
 """
-import csv, json, subprocess, sys, shutil
+import csv, json, subprocess, sys, shutil, os, hashlib
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
+from validate_rows import load_valid, format_problems
 
 ROOT = Path(__file__).resolve().parent
 W, H, FPS = 1080, 1920, 30
 SAFE_X0, SAFE_X1 = 80, 900          # sağdaki buton şeridi (900-1080) boş kalır
 SAFE_Y0, SAFE_Y1 = 300, 1480        # üst menü ve alt açıklama alanı boş kalır
 MAX_SECONDS = 59
+RENDER_VERSION = "3"   # görünüm/ses mantığı değişince artırılır; önbelleği geçersiz kılar
 MUSIC_GAIN = 0.32   # müzik seviyesi (video yaklaşık -16 LUFS civarına oturur)
 PING_GAIN = 0.60    # radar sesi seviyesi
 
@@ -144,6 +146,17 @@ def scene_duration(kind, text):
     if kind == "final": return 3.6
     return min(6.0, max(2.8, 0.38 * len(text.split()) + 1.0))
 
+def row_hash(brand, row, bg_path):
+    h = hashlib.sha1()
+    h.update(RENDER_VERSION.encode()); h.update(f"{MUSIC_GAIN}{PING_GAIN}".encode())
+    h.update(json.dumps(row, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+    h.update((ROOT / "brand.json").read_bytes())
+    for p in (ROOT / "assets" / "music.mp3", ROOT / "assets" / "ping.wav", bg_path):
+        if p and Path(p).exists():
+            h.update(Path(p).read_bytes())
+    return h.hexdigest()
+
+
 def build_video(brand, row, out_dir, tmp):
     parts = [("headline", row["headline"])]
     details = [row[k].strip() for k in ("d1", "d2", "d3") if row.get(k, "").strip()]
@@ -156,6 +169,14 @@ def build_video(brand, row, out_dir, tmp):
     total_dur = sum(scene_duration(k, t) for k, t in parts)
     if total_dur > MAX_SECONDS:
         print(f"[{row['id']}] {total_dur:.0f} sn: çok uzun, metni kısaltın."); sys.exit(1)
+    rh = row_hash(brand, row, bg_path)
+    cache_dir = os.environ.get("MEDIA_CACHE_DIR")
+    if cache_dir:
+        cmp4, chash = Path(cache_dir) / f"{row['id']}.mp4", Path(cache_dir) / f"{row['id']}.hash"
+        if cmp4.exists() and chash.exists() and chash.read_text().strip() == rh:
+            shutil.copy(cmp4, out_dir / f"{row['id']}.mp4"); (out_dir / f"{row['id']}.hash").write_text(rh)
+            print(f"[{row['id']}] önbellekten alındı")
+            return total_dur
     clips, cum, n_detail = [], float(row.get("start") or 0), 0
     for i, (kind, text) in enumerate(parts):
         if kind == "detail": n_detail += 1
@@ -202,6 +223,7 @@ def build_video(brand, row, out_dir, tmp):
             "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2", "-t", f"{total_dur:.2f}",
             "-movflags", "+faststart", str(out)]
     run(cmd)
+    (out_dir / f"{row['id']}.hash").write_text(rh)
     return total_dur
 
 def uniq(seq):
@@ -238,11 +260,17 @@ def main():
     tmp = ROOT / "_tmp"; tmp.mkdir(exist_ok=True)
     if not shutil.which("ffmpeg"): print("ffmpeg bulunamadı. Kurun: ffmpeg.org"); sys.exit(1)
     make_logo(brand, 1080).convert("RGB").save(out_dir / "avatar.png")      # üç platformda aynı profil fotoğrafı
-    rows = list(csv.DictReader(open(ROOT / "content.csv", encoding="utf-8-sig")))
+    rows, problems = load_valid(ROOT / "content.csv")
+    (out_dir / "skipped.txt").write_text(format_problems(problems), encoding="utf-8")
+    bad = {p[1] for p in problems if p[2] == "ERR"}
+    if problems:
+        print("\nUYARI/ATLANAN SATIRLAR:\n" + format_problems(problems) + "\n")
+    if bad:
+        print(f"{len(bad)} satır karantinaya alındı (video üretilmedi); diğer satırlar devam ediyor.")
+    if not rows:
+        print("Geçerli satır yok."); sys.exit(1)
     caps = []
     for row in rows:
-        if not row.get("source", "").strip():
-            print(f"[{row['id']}] KAYNAK boş: kaynaksız video üretilmez."); sys.exit(1)
         dur = build_video(brand, row, out_dir, tmp)
         caps += captions_for(brand, row)
         print(f"[{row['id']}] {row['series']}: {dur:.1f} sn  ->  out/{row['id']}.mp4")
