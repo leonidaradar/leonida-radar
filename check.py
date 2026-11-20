@@ -14,7 +14,11 @@ def probe(p):
 def err(msg): errors.append(msg); print("  HATA:", msg)
 
 sys.path.insert(0, str(ROOT))
-from validate_rows import load_valid
+from validate_rows import load_valid, row_platforms
+try:
+    IG_FMT = str(json.loads((ROOT / "autopilot_config.json").read_text(encoding="utf-8")).get("instagram_format", "carousel")).lower()
+except Exception:
+    IG_FMT = "carousel"
 rows, _problems = load_valid(ROOT / "content.csv")   # karantinadaki satırlar zaten üretilmedi; denetlenmez
 if not rows: print("Geçerli satır yok."); sys.exit(1)
 caps = list(csv.DictReader(open(OUT / "captions.csv", encoding="utf-8-sig")))
@@ -22,10 +26,25 @@ headlines = [r["headline"].strip().lower() for r in rows]
 if len(set(headlines)) != len(headlines): err("Aynı manşet iki kez var (tekrar içerik).")
 if len({r["series"] for r in rows}) < 3: err("En az 3 farklı seri kullanın (kalıp tekrarı riski).")
 
+def check_cards(r):
+    from PIL import Image
+    cards = sorted(OUT.glob(f"{r['id']}_c*.png"))
+    if len(cards) < 3: err(f"{r['id']}: en az 3 kart gerekir (bulunan {len(cards)})"); return
+    for p in cards:
+        im = Image.open(p)
+        if im.size != (1080, 1350): err(f"{p.name}: boyut {im.size} (1080x1350 olmalı)")
+        if p.stat().st_size > 8 * 1024 * 1024: err(f"{p.name}: 8 MB üstü")
+    print(f"  ok  {len(cards)} kart 1080x1350")
+
 for r in rows:
-    vid = OUT / f"{r['id']}.mp4"; print(f"[{r['id']}] {vid.name}")
-    if not vid.exists(): err("video yok"); continue
+    plats = row_platforms(r)
+    need_video = bool(plats & {"tiktok", "youtube"}) or ("instagram" in plats and IG_FMT in ("reel", "both"))
+    need_card = "instagram" in plats and IG_FMT in ("carousel", "both")
+    vid = OUT / f"{r['id']}.mp4"; print(f"[{r['id']}] {'+'.join(sorted(plats))}")
     if not r["source"].strip(): err("kaynak boş")
+    if need_card: check_cards(r)
+    if not need_video: continue
+    if not vid.exists(): err(f"{r['id']}: video yok"); continue
     info = probe(vid)
     v = next((s for s in info["streams"] if s["codec_type"] == "video"), None)
     a = next((s for s in info["streams"] if s["codec_type"] == "audio"), None)

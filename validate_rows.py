@@ -4,7 +4,8 @@
 content.csv satırlarını doğrular ve yer tutucuları açar. factory.py, check.py ve publish.py bunu kullanır.
 Hatalı satır TÜM sistemi durdurmaz: karantinaya alınır, nedeni out/skipped.txt dosyasına yazılır.
 
-Sütunlar: id,series,headline,d1,d2,d3,final,topic_tag,source,bg,start,publish_at
+Sütunlar: id,series,headline,d1,d2,d3,final,topic_tag,source,bg,start,publish_at,platforms
+platforms (isteğe bağlı): hangi platformlara gideceği. Boş ya da all = üçü. Örn. ig, tt, yt ya da birleşik: ig+yt
 Yer tutucular (metinlerde kullanılabilir):
   {KALAN_GUN}   -> çıkışa kalan gün sayısı (yayın tarihine göre), örn. 4
   {KALAN_YAZI}  -> "4 gün kaldı" / "yarın çıkıyor" / "bugün çıkıyor"   (çıkıştan sonra satır hata verir)
@@ -15,7 +16,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-FIELDS = ["id", "series", "headline", "d1", "d2", "d3", "final", "topic_tag", "source", "bg", "start", "publish_at"]
+FIELDS = ["id", "series", "headline", "d1", "d2", "d3", "final", "topic_tag", "source", "bg", "start", "publish_at", "platforms"]
+PLATFORM_MAP = {"ig": "instagram", "tt": "tiktok", "yt": "youtube"}
 REQUIRED = ["id", "series", "headline", "d1", "final", "topic_tag", "source"]
 TEXT_FIELDS = ["headline", "d1", "d2", "d3", "final"]
 MAX_LEN = {"series": 20, "headline": 60, "d1": 90, "d2": 90, "d3": 90, "final": 70}
@@ -73,6 +75,24 @@ def expand(row, now=None):
     return out
 
 
+
+def row_platforms(row):
+    """platforms sütunu -> {'instagram','tiktok','youtube'} kümesi. Boş/all = üçü. Geçersiz belirteçte ValueError."""
+    raw = (row.get("platforms") or "").strip().lower()
+    if raw in ("", "all"):
+        return set(PLATFORM_MAP.values())
+    out = set()
+    for tok in re.split(r"[+|;\s]+", raw):
+        if not tok:
+            continue
+        if tok == "all":
+            return set(PLATFORM_MAP.values())
+        if tok not in PLATFORM_MAP:
+            raise ValueError(f"platforms değeri hatalı: '{tok}' (ig, tt, yt ya da all; birleştirmek için + kullan)")
+        out.add(PLATFORM_MAP[tok])
+    return out
+
+
 def read_raw(path):
     """Ham satırlar: (satır_no, liste). Başlık sütun sayısını döndürür."""
     with open(path, encoding="utf-8-sig", newline="") as f:
@@ -115,6 +135,10 @@ def check_row(row, root=ROOT):
     bg = (row.get("bg") or "").strip()
     if bg and not (Path(root) / "backgrounds" / bg).exists():
         errs.append(f"bg dosyası yok: backgrounds/{bg}")
+    try:
+        row_platforms(row)
+    except ValueError as e:
+        errs.append(str(e))
     try:
         pub = parse_publish_at(row.get("publish_at"))
         if pub and pub < istanbul_now():

@@ -8,7 +8,7 @@ Kullanım:  python factory.py
 import csv, json, subprocess, sys, shutil, os, hashlib
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
-from validate_rows import load_valid, format_problems
+from validate_rows import load_valid, format_problems, row_platforms
 
 ROOT = Path(__file__).resolve().parent
 W, H, FPS = 1080, 1920, 30
@@ -82,11 +82,113 @@ def gradient_bg(brand):
         for x in range(W): px[x, y] = col
     return im.convert("RGBA")
 
+_CLIPG = {}
+def clip_gradients():
+    if "g" not in _CLIPG:
+        im = Image.new("RGBA", (W, H), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
+        for y in range(H):
+            a = 0
+            if y < 650: a = int(150 * (1 - y / 650))
+            if y > 780: a = max(a, int(215 * min(1, (y - 780) / 560)))
+            if a: d.line([(0, y), (W, y)], fill=(0, 0, 0, a))
+        _CLIPG["g"] = im
+    return _CLIPG["g"].copy()
+
+
+# ---------------------------------------------------------------- Instagram carousel (kart) üretimi
+CW, CH = 1080, 1350     # Instagram 4:5 gönderi/carousel boyutu
+
+def cover_crop(img, w, h):
+    img = img.convert("RGB"); r = max(w / img.width, h / img.height)
+    img = img.resize((int(img.width * r) + 1, int(img.height * r) + 1), Image.LANCZOS)
+    x, y = (img.width - w) // 2, (img.height - h) // 2
+    return img.crop((x, y, x + w, y + h))
+
+def gradient_bg_size(brand, w, h):
+    top = brand["rgb"]["bg"]; bot = tuple(int(v * 0.35 + t * 0.65) for v, t in zip(tuple(int(x * 0.55 + y * 0.45) for x, y in zip(top, brand["rgb"]["main"])), top))
+    im = Image.new("RGB", (w, h)); d = ImageDraw.Draw(im)
+    for y in range(h):
+        t = y / (h - 1); d.line([(0, y), (w, y)], fill=tuple(int(top[i] * (1 - t) + bot[i] * t) for i in range(3)))
+    return im.convert("RGBA")
+
+def card_background(brand, row, tmp):
+    """bg bir resimse onu, klipse start saniyesinden bir kareyi arka plan yapar; yoksa marka degradesi."""
+    bgname = (row.get("bg") or "").strip()
+    if bgname:
+        p = ROOT / "backgrounds" / bgname
+        if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+            return cover_crop(Image.open(p), CW, CH).convert("RGBA"), True
+        frame = tmp / f"{row['id']}_bgframe.png"
+        run(["ffmpeg", "-y", "-ss", str(row.get("start") or 0), "-i", str(p), "-frames:v", "1", str(frame)])
+        return cover_crop(Image.open(frame), CW, CH).convert("RGBA"), True
+    return gradient_bg_size(brand, CW, CH), False
+
+def render_card(brand, base_bg, has_photo, kind, text, series, idx, n_slides, slide_no):
+    rgb = brand["rgb"]; base = base_bg.copy()
+    if has_photo:
+        base.alpha_composite(Image.new("RGBA", (CW, CH), (0, 0, 0, 120)))
+        g = Image.new("RGBA", (CW, CH), (0, 0, 0, 0)); gd = ImageDraw.Draw(g)
+        for y in range(CH):
+            a = int(160 * max(0, (y - 500) / (CH - 500))) if y > 500 else 0
+            if a: gd.line([(0, y), (CW, y)], fill=(0, 0, 0, a))
+        base.alpha_composite(g)
+    d = ImageDraw.Draw(base); X0, X1 = 80, CW - 80; max_w = X1 - X0
+    base.alpha_composite(make_logo(brand, 84, with_bg=False), (X0, 64))
+    d.text((X0 + 100, 80), "@" + brand["handle"], font=font(brand, "bold", 34), fill=rgb["text"])
+    cnt = f"{slide_no}/{n_slides}"; fc = font(brand, "bold", 32)
+    d.text((X1 - int(d.textlength(cnt, font=fc)), 82), cnt, font=fc, fill=rgb["muted"])
+    if kind == "headline":
+        f_chip = font(brand, "bold", 34); chip = tr_upper(series); cw = int(d.textlength(chip, font=f_chip)) + 52
+        d.rounded_rectangle([X0, 220, X0 + cw, 220 + 68], radius=34, fill=rgb["main"]); d.text((X0 + 26, 220 + 13), chip, font=f_chip, fill=(255, 255, 255))
+        f, lines, size = fit_text(d, brand, tr_upper(text), "bold", 132, 70, max_w, 640)
+        y = 340
+        for ln in lines: d.text((X0, y), ln, font=f, fill=rgb["text"]); y += int(size * 1.16)
+        d.rectangle([X0, y + 14, X0 + 220, y + 26], fill=rgb["accent"])
+        d.text((X0, CH - 190), "KAYDIR  →", font=font(brand, "bold", 46), fill=rgb["accent"])
+    elif kind == "detail":
+        d.text((X0, 230), f"{idx:02d}", font=font(brand, "bold", 170), fill=rgb["accent"])
+        f, lines, size = fit_text(d, brand, text, "bold", 88, 56, max_w, 600)
+        y = 470
+        for ln in lines: d.text((X0, y), ln, font=f, fill=rgb["text"]); y += int(size * 1.2)
+    else:
+        f, lines, size = fit_text(d, brand, text, "bold", 92, 56, max_w, 420)
+        y = 260
+        for ln in lines: d.text((X0, y), ln, font=f, fill=rgb["text"]); y += int(size * 1.18)
+        d.text((X0, y + 40), "@" + brand["handle"], font=font(brand, "bold", 72), fill=rgb["accent"])
+        base.alpha_composite(make_logo(brand, 200, with_bg=False), (X0, y + 150))
+        fd = font(brand, "regular", 28); dy = CH - 190
+        for ln in wrap(brand["disclaimer"], fd, max_w, d): d.text((X0, dy), ln, font=fd, fill=rgb["muted"]); dy += 36
+    for i in range(n_slides):                    # alt nokta göstergesi
+        cx = CW // 2 - (n_slides - 1) * 22 + i * 44
+        d.ellipse([cx - 9, CH - 62, cx + 9, CH - 44], fill=rgb["main"] if i == slide_no - 1 else (255, 255, 255, 70))
+    return base.convert("RGB")
+
+def build_cards(brand, row, out_dir, tmp):
+    parts = [("headline", row["headline"])] + [("detail", row[k].strip()) for k in ("d1", "d2", "d3") if row.get(k, "").strip()] + [("final", row["final"])]
+    bg, photo = card_background(brand, row, tmp)
+    n, paths, di = len(parts), [], 0
+    for no, (kind, text) in enumerate(parts, start=1):
+        if kind == "detail": di += 1
+        img = render_card(brand, bg, photo, kind, text, row["series"], di, n, no)
+        p = out_dir / f"{row['id']}_c{no}.png"; img.save(p, optimize=False); paths.append(p)
+    return paths
+
+def load_cfg():
+    p = ROOT / "autopilot_config.json"
+    cfg = {"instagram_format": "carousel"}
+    if p.exists():
+        cfg.update(json.loads(p.read_text(encoding="utf-8")))
+    return cfg
+
+
 _GRAD = {}
 def render_scene(brand, kind, text, series, idx, total, use_video_bg, is_last=False):
     rgb = brand["rgb"]
     if use_video_bg:
-        base = Image.new("RGBA", (W, H), (0, 0, 0, 150))
+        if kind == "final":
+            base = Image.new("RGBA", (W, H), (0, 0, 0, 175))       # kapanış sahnesi: koyu zemin, marka net okunur
+        else:
+            base = clip_gradients()                               # oyun klibi görünür kalır; yazı için üst/alt degrade
     else:
         if "g" not in _GRAD: _GRAD["g"] = gradient_bg(brand)
         base = _GRAD["g"].copy()
@@ -101,18 +203,22 @@ def render_scene(brand, kind, text, series, idx, total, use_video_bg, is_last=Fa
     d.rounded_rectangle([SAFE_X0, 470, SAFE_X0 + cw, 470 + 72], radius=36, fill=rgb["main"])
     d.text((SAFE_X0 + 28, 470 + 14), chip, font=f_chip, fill=(255, 255, 255))
     # ana metin
-    max_w, y0 = SAFE_X1 - SAFE_X0, 680
+    max_w = SAFE_X1 - SAFE_X0
     if kind == "headline":
         f, lines, size = fit_text(d, brand, tr_upper(text), "bold", 128, 72, max_w, 640)
-        col = rgb["text"]
     elif kind == "detail":
-        d.text((SAFE_X0, y0 - 20), f"{idx:02d}", font=font(brand, "bold", 64), fill=rgb["accent"])
-        y0 += 70
         f, lines, size = fit_text(d, brand, text, "bold", 88, 56, max_w, 560)
-        col = rgb["text"]
     else:  # final
         f, lines, size = fit_text(d, brand, text, "bold", 92, 56, max_w, 420)
-        col = rgb["text"]
+    col = rgb["text"]
+    block_h = len(lines) * int(size * 1.18)
+    clip_mode = use_video_bg and kind != "final"
+    y0 = 680
+    if clip_mode:   # klip varken yazı alt üçte bire (güvenli alanın içine) oturur, aksiyon görünür kalır
+        y0 = max(760, 1390 - block_h - (70 if kind == "detail" else 0) - (30 if kind == "headline" else 0))
+    if kind == "detail":
+        d.text((SAFE_X0, y0 - (0 if clip_mode else 20)), f"{idx:02d}", font=font(brand, "bold", 64), fill=rgb["accent"])
+        y0 += 70
     y = y0
     for ln in lines:
         d.text((SAFE_X0, y), ln, font=f, fill=col); y += int(size * 1.18)
@@ -186,7 +292,9 @@ def build_video(brand, row, out_dir, tmp):
             thumb = Image.new("RGB", (W, H), brand["rgb"]["bg"]); thumb.paste(img, (0, 0), img)
             thumb.save(out_dir / f"thumb_{row['id']}.png")
         dur = scene_duration(kind, text); clip = tmp / f"{row['id']}_{i}.mp4"
-        if bg_path:
+        if bg_path and bg_path.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+            src = ["-loop", "1", "-framerate", str(FPS), "-i", str(bg_path)]      # sabit resim arka plan
+        elif bg_path:
             src = ["-ss", f"{cum:.2f}", "-i", str(bg_path)]
         else:
             src = ["-f", "lavfi", "-i", f"color=c=black:s={W}x{H}:r={FPS}"]
@@ -270,10 +378,18 @@ def main():
     if not rows:
         print("Geçerli satır yok."); sys.exit(1)
     caps = []
+    cfg = load_cfg(); fmt = str(cfg.get("instagram_format", "carousel")).lower()
     for row in rows:
-        dur = build_video(brand, row, out_dir, tmp)
+        plats = row_platforms(row)
+        need_video = bool(plats & {"tiktok", "youtube"}) or ("instagram" in plats and fmt in ("reel", "both"))
+        need_card = "instagram" in plats and fmt in ("carousel", "both")
+        info = []
+        if need_video:
+            dur = build_video(brand, row, out_dir, tmp); info.append(f"video {dur:.1f} sn")
+        if need_card:
+            n_cards = len(build_cards(brand, row, out_dir, tmp)); info.append(f"{n_cards} kart")
         caps += captions_for(brand, row)
-        print(f"[{row['id']}] {row['series']}: {dur:.1f} sn  ->  out/{row['id']}.mp4")
+        print(f"[{row['id']}] {row['series']} ({'+'.join(sorted({'instagram': 'ig', 'tiktok': 'tt', 'youtube': 'yt'}[p] for p in plats))}): " + ", ".join(info))
     with open(out_dir / "captions.csv", "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=["id", "platform", "title", "caption"]); w.writeheader(); w.writerows(caps)
     shutil.rmtree(tmp, ignore_errors=True)
