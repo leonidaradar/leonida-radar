@@ -157,7 +157,7 @@ def build_input(svc, channel_id, text, title, urls, cfg, due_at=None, kind="vide
     if due_at:
         inp["dueAt"] = due_at
     if svc == "instagram" and kind == "carousel":
-        inp["metadata"] = {"instagram": {"type": "post", "isAiGenerated": bool(cfg["ai_generated"])}}
+        inp["metadata"] = {"instagram": {"type": "post", "shouldShareToFeed": True, "isAiGenerated": bool(cfg["ai_generated"])}}
     elif svc == "instagram":
         inp["metadata"] = {"instagram": {"type": "reel", "shouldShareToFeed": True, "isAiGenerated": bool(cfg["ai_generated"])}}
     elif svc == "tiktok":
