@@ -4,7 +4,7 @@
   "youtube_category_id": "20",
   "ai_generated": false,
   "media_wait_seconds": 600,
-  "mode": "addToQueue"
+  "mode": "addToQueue", 
   "instagram_format": "carousel" 
   "thumbnail_offset_ms": 600
 }
