@@ -72,7 +72,7 @@ jobs:
 
       - uses: actions/configure-pages@v5
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with:
           path: media
 
@@ -99,3 +99,4 @@ jobs:
           [ -f published.json ] && git add published.json || true
           git diff --cached --quiet || git commit -m "durum: yayınlananlar güncellendi"
           git push
+
