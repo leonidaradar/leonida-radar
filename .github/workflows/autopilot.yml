@@ -1,3 +1,13 @@
+- name: Videoları media klasörüne kopyala ve kaydet
+    run: |
+      mkdir -p media
+      find out -maxdepth 1 \( -name '*.mp4' -o -name '*.hash' -o -name '*_c*.png' \) -exec cp {} media/ \;
+      git config user.name "autopilot"
+      git config user.email "autopilot@users.noreply.github.com"
+      git add media
+      git diff --cached --quiet || git commit -m "media: videolar güncellendi"
+      git pull --rebase --autostash
+      git push
 name: autopilot
 
 # Her gün 06:00 UTC (Türkiye saatiyle 09:00) çalışır; content.csv değişince hemen çalışır; elle de başlatılabilir.
