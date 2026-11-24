@@ -59,7 +59,6 @@ jobs:
 
       - name: Yayın öncesi kontrol (başarısızsa yayın yapılmaz)
         run: python check.py
-        
 
       - name: Videoları media klasörüne kopyala ve kaydet
         run: |
@@ -77,6 +76,7 @@ jobs:
       - uses: actions/upload-pages-artifact@v4
         with:
           path: media
+          overwrite: true
 
       - name: Videoları herkese açık adrese yayınla (GitHub Pages)
         id: deploy
@@ -100,5 +100,5 @@ jobs:
         run: |
           [ -f published.json ] && git add published.json || true
           git diff --cached --quiet || git commit -m "durum: yayınlananlar güncellendi"
+          git pull --rebase --autostash
           git push
-
