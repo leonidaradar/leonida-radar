@@ -76,7 +76,7 @@ jobs:
       - uses: actions/upload-pages-artifact@v4
         with:
           path: media
-          overwrite: true
+          retention-days: 1
 
       - name: Videoları herkese açık adrese yayınla (GitHub Pages)
         id: deploy
